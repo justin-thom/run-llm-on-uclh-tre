@@ -171,6 +171,14 @@ def main() -> None:
 
     df.to_csv(out_csv, index=False)
     df.to_json(out_json, orient="records", indent=4)
+    
+    # Save model answers in a readable text file.
+    readable_path = out_dir / "answers_readable.txt"
+    with readable_path.open("w", encoding="utf-8") as f:
+        for _, row in df.iterrows():
+            f.write(f"ID: {row['id']}\n")
+            f.write(str(row["output"]))
+            f.write("\n\n" + "=" * 60 + "\n\n")
 
     logger.info("Outputs saved to: %s", out_dir)
 
