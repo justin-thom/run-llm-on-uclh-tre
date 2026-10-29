@@ -1,0 +1,29 @@
+pipeline:
+  # https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.TextGenerationPipeline
+  model: /vm-shared-storage/Qwen3.8-27B
+  device: cuda:0
+  dtype: bfloat16
+  batch_size: 1
+  num_workers: 1
+
+chat_template_kwargs:
+  # https://huggingface.co/docs/transformers/internal/tokenization_utils#transformers.PreTrainedTokenizerBase.apply_chat_template
+  add_generation_prompt: true
+  enable_thinking: false
+
+generation:
+  # https://huggingface.co/docs/transformers/en/main_classes/pipelines#transformers.TextGenerationPipeline.__call__
+  return_full_text: false
+  clean_up_tokenization_spaces: false
+  # https://huggingface.co/docs/transformers/en/main_classes/text_generation#transformers.GenerationConfig
+  max_new_tokens: 4096
+  use_cache: true
+  # https://huggingface.co/Qwen/Qwen3.8-27B#best-practices
+  # presence_penalty=1.5 is recommended upstream but not implemented here.
+  temperature: 0.7
+  top_p: 0.8
+  min_p: 0
+  top_k: 20
+  do_sample: true
+  repetition_penalty: 1.0
+
