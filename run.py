@@ -11,11 +11,16 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from time import perf_counter
 
+import platform
+from importlib.metadata import version
+
+import torch
 import pandas as pd
 import yaml
 from tqdm import tqdm
-from transformers import pipeline
+from transformers import pipeline, set_seed
 
 from prompt import build_messages
 
@@ -98,7 +103,9 @@ def main() -> None:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+    set_seed(args.seed)
 
     # Create output dir early if not a dry run so we can log to it
     out_dir: Path | None = None
@@ -129,7 +136,13 @@ def main() -> None:
     if "trust_remote_code" not in pipe_kwargs:
         pipe_kwargs["trust_remote_code"] = False
 
+    loading_start = perf_counter()
     pipe = pipeline("text-generation", **pipe_kwargs)
+
+    if pipe.device.type == "cuda":
+        torch.cuda.synchronize(pipe.device)
+
+    loading_seconds = perf_counter() - loading_start
 
     # Make sure tokenizer is set up correctly
     if pipe.tokenizer.pad_token is None:
@@ -146,6 +159,13 @@ def main() -> None:
     ]
 
     logger.info("Starting generation...")
+
+    if pipe.device.type == "cuda":
+        torch.cuda.synchronize(pipe.device)
+        torch.cuda.reset_peak_memory_stats(pipe.device)
+
+    generation_start = perf_counter()
+
     # We pass messages as a generator so the pipeline yields outputs iteratively
     df["output"] = [
         output[0]["generated_text"]
@@ -155,6 +175,11 @@ def main() -> None:
             desc="Generating responses",
         )
     ]
+
+    if pipe.device.type == "cuda":
+        torch.cuda.synchronize(pipe.device)
+
+    generation_seconds = perf_counter() - generation_start
 
     logger.info("Saving outputs...")
     # out_dir is guaranteed to be set if not args.dry_run
@@ -171,7 +196,7 @@ def main() -> None:
 
     df.to_csv(out_csv, index=False)
     df.to_json(out_json, orient="records", indent=4)
-    
+
     # Save model answers in a readable text file.
     readable_path = out_dir / "answers_readable.txt"
     with readable_path.open("w", encoding="utf-8") as f:
@@ -179,6 +204,55 @@ def main() -> None:
             f.write(f"ID: {row['id']}\n")
             f.write(str(row["output"]))
             f.write("\n\n" + "=" * 60 + "\n\n")
+
+    # Record the environment used for this run.
+    run_info = {
+        "python_version": platform.python_version(),
+        "operating_system": platform.platform(),
+        "software_versions": {
+            name: version(name)
+            for name in ("torch", "transformers", "pandas", "PyYAML", "tqdm")
+        },
+        "model_path": str(cfg.get("pipeline", {}).get("model")),
+        "model_class": type(pipe.model).__name__,
+        "model_dtype": str(pipe.model.dtype),
+        "device": str(pipe.device),
+        "gpu_name": (
+            torch.cuda.get_device_name(pipe.device)
+            if pipe.device.type == "cuda"
+            else None
+        ),
+        "pytorch_cuda_version": torch.version.cuda,
+        "seed": args.seed,"record_count": len(df),
+        "gpu_memory": (
+            {
+                "total_gib": (
+                    torch.cuda.get_device_properties(pipe.device).total_memory
+                    / 1024**3
+                ),
+                "generation_peak_allocated_gib": (
+                    torch.cuda.max_memory_allocated(pipe.device) / 1024**3
+                ),
+                "generation_peak_reserved_gib": (
+                    torch.cuda.max_memory_reserved(pipe.device) / 1024**3
+                ),
+            }
+            if pipe.device.type == "cuda"
+            else None
+        ),
+        "timing": {
+            "model_loading_seconds": loading_seconds,
+            "generation_total_seconds": generation_seconds,
+            "generation_mean_seconds_per_record": (
+                generation_seconds / len(df)
+            ),
+    }
+    }
+
+    (out_dir / "run_info.json").write_text(
+        json.dumps(run_info, indent=4),
+        encoding="utf-8",
+    )
 
     logger.info("Outputs saved to: %s", out_dir)
 
